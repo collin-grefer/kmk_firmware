@@ -5,7 +5,9 @@ from micropython import const
 from storage import getmount
 
 from kmk.keys import FIRST_KMK_INTERNAL_KEY, ConsumerKey, ModifierKey, MouseKey
-from kmk.utils import Debug, clamp
+from kmk.utils import clamp, Debug
+
+debug = Debug(__name__)
 
 try:
     from adafruit_ble import BLERadio
@@ -32,6 +34,7 @@ class HIDReportTypes:
     MOUSE = 2
     CONSUMER = 3
     SYSCONTROL = 4
+    POINTER = 5
 
 
 class HIDUsage:
@@ -39,11 +42,12 @@ class HIDUsage:
     MOUSE = 0x02
     CONSUMER = 0x01
     SYSCONTROL = 0x80
+    POINTER = 0x01
 
 
 class HIDUsagePage:
     CONSUMER = 0x0C
-    KEYBOARD = MOUSE = SYSCONTROL = 0x01
+    KEYBOARD = MOUSE = POINTER = SYSCONTROL = 0x01
 
 
 HID_REPORT_SIZES = {
@@ -51,6 +55,7 @@ HID_REPORT_SIZES = {
     HIDReportTypes.MOUSE: 4,
     HIDReportTypes.CONSUMER: 2,
     HIDReportTypes.SYSCONTROL: 8,  # TODO find the correct value for this
+    HIDReportTypes.POINTER: 5,
 }
 
 
@@ -91,8 +96,9 @@ class AbstractHID:
         self._cc_report[0] = HIDReportTypes.CONSUMER
         self._cc_pending = False
 
-        self._pd_report = bytearray(HID_REPORT_SIZES[HIDReportTypes.MOUSE] + 1)
-        self._pd_report[0] = HIDReportTypes.MOUSE
+        if self._pd_report is None:
+            self._pd_report = bytearray(HID_REPORT_SIZES[HIDReportTypes.MOUSE] + 1)
+            self._pd_report[0] = HIDReportTypes.MOUSE
         self._pd_pending = False
 
         # bodgy pointing device panning autodetect
@@ -244,8 +250,9 @@ class AbstractHID:
         delta = clamp(axis.delta, -127, 127)
         axis.delta -= delta
         try:
-            self._pd_report[axis.code + 2] = 0xFF & delta
-            self._pd_pending = True
+            if len(self._pd_report) > axis.code + 2:
+                self._pd_report[axis.code + 2] = 0xFF & delta
+                self._pd_pending = True
         except IndexError:
             if debug.enabled:
                 debug('Axis(', axis.code, ') not supported')
@@ -284,6 +291,10 @@ class USBHID(AbstractHID):
                 self.devices[HIDReportTypes.KEYBOARD] = device
             elif up == HIDUsagePage.MOUSE and us == HIDUsage.MOUSE:
                 self.devices[HIDReportTypes.MOUSE] = device
+            elif up == HIDUsagePage.POINTER and us == HIDUsage.POINTER:
+                self.devices[HIDReportTypes.POINTER] = device
+                self._pd_report = bytearray(HID_REPORT_SIZES[HIDReportTypes.POINTER] + 1)
+                self._pd_report[0] = HIDReportTypes.POINTER
             elif up == HIDUsagePage.SYSCONTROL and us == HIDUsage.SYSCONTROL:
                 self.devices[HIDReportTypes.SYSCONTROL] = device
 
@@ -346,6 +357,12 @@ class BLEHID(AbstractHID):
 
             if up == HIDUsagePage.MOUSE and us == HIDUsage.MOUSE:
                 result[HIDReportTypes.MOUSE] = device
+                continue
+
+            if up == HIDUsagePage.POINTER and us == HIDUsage.POINTER:
+                self.devices[HIDReportTypes.POINTER] = device
+                self._pd_report = bytearray(HID_REPORT_SIZES[HIDReportTypes.POINTER] + 1)
+                self._pd_report[0] = HIDReportTypes.POINTER
                 continue
 
             if up == HIDUsagePage.SYSCONTROL and us == HIDUsage.SYSCONTROL:
